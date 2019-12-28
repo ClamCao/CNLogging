@@ -1,88 +1,130 @@
 # -*- coding=utf-8 -*-
 # !/usr/bin/python2.7
-__author__ = 'sinchan'
-
 import datetime
+import logging
+import os
 import sys
 import threading
 
 
+class Observer(object):
+
+    def __init__(self, value=None, callbacks=None):
+        if callbacks is None:
+            callbacks = []
+        self._prisoner = value
+        self._observers = callbacks
+
+    @property
+    def monitored(self, ):
+        return self._prisoner
+
+    @monitored.setter
+    def monitored(self, value):
+        self._prisoner = value
+        for callback in self._observers:
+            if isinstance(self._prisoner, dict):
+                callback(**self._prisoner)
+            elif isinstance(self._prisoner, (tuple, list)):
+                callback(*self._prisoner)
+            else:
+                callback(self._prisoner)
+
+    def bindObserver(self, callback):
+        self._observers.append(callback)
+
+
 LOCKER = threading.RLock()
 TIME_FORMAT = "[%Y/%m/%d %H:%M:%S]"
-ACTIONS = {'DEBUG', 'INFO', 'WARNING', 'ERROR',}
+ACTIONS = {'DEBUG', 'INFO', 'WARNING', 'ERROR', }
 
 
-class LogC(object):
+class LogBase(object):
 
-    logfile = None
-    stdout = True
-    timeFmt = TIME_FORMAT
-    actions = ACTIONS
+    _fhdlr = None
+    _stdhlr = sys.stdout
+    _actions = ACTIONS
+    _timeFmt = TIME_FORMAT
 
     def __init__(self):
         self._locker = LOCKER
 
 
-class CNLogger(LogC):
+class CNLogger(LogBase):
 
     def __init__(self, loggername=None):
+        # type(str) -> None
         super(CNLogger, self).__init__()
-
         self.loggername = loggername
 
-        if self.logfile:
-            self.__fhdlr = open(self.logfile, 'a')
-        else:
-            self.__fhdlr = None
-
-        if self.stdout:
-            self.__stdhlr = sys.stdout
-        else:
-            self.__stdhlr = None
-
     def _smartSerialize(self, data):
+        # type(str/list/dict) -> str
         if isinstance(data, dict):
-            dictStr = "{"
-            for k, v in data.iteritems():
-                dictStr += "'" + k + "':" + self._smartSerialize(v) + ","
-            dictStr += "}"
-            return dictStr
-        elif isinstance(data, (set, list, tuple)):
-            setStr = "["
-            for i in data:
-                setStr += self._smartSerialize(i) + ","
-            setStr += "]"
-            return setStr
+            dictContent = "".join("".join(["'", k, "':", self._smartSerialize(v), ","]) for k, v in sorted(data.iteritems(), key=lambda x: x[0]))
+            return "".join(["{", dictContent, "}"])
+        elif isinstance(data, set):
+            setStr = ",".join([self._smartSerialize(i) for i in data])
+            return "".join(["{", setStr, "}"])
+        elif isinstance(data, list):
+            setStr = ",".join([self._smartSerialize(i) for i in data])
+            return "".join(["[", setStr, "]"])
+        elif isinstance(data, tuple):
+            setStr = ",".join([self._smartSerialize(i) for i in data])
+            return "".join(["(", setStr, ")"])
         elif isinstance(data, (float, int)):
             return str(data)
         elif isinstance(data, str):
             if data:
-                return "'" + data + "'"
+                return "".join(["'", data, "'"])
             else:
-                return ""
+                return "''"
         elif isinstance(data, unicode):
-            return "'" + data.encode('utf8') + "'"
+            return "".join(["'", data.encode('utf8'), "'"])
         else:
-            return "'" + str(data) + "'"
+            return "".join(["'", str(data), "'"])
 
     def _genRecord(self, func="", action="", **kwargs):
+        # type(str, str, **Kwargs) -> None
         func = "[%20s" % func + "]"
         action = "[%10s" % action + "]"
-        kwargs = "" or self._smartSerialize(kwargs)
-        now = datetime.datetime.now().strftime(self.timeFmt)
-        info = now + func + action + kwargs + "\n"
+        kwargs = self._smartSerialize(kwargs) if kwargs else ""
+        now = datetime.datetime.now().strftime(self._timeFmt)
+        info = "".join([now, func, action, kwargs, "\n"])
         return info
 
     def log(self, where, action, **kwargs):
-        if action in self.actions:
+        # type(str, str, **kwargs) -> None
+        if action in self._actions:
             record = self._genRecord(where, action, **kwargs)
             with self._locker:
-                if self.__fhdlr:
-                    self.__fhdlr.write(record)
-                    self.__fhdlr.flush()
-                if self.__stdhlr:
-                    self.__stdhlr.write(record)
-                    self.__stdhlr.flush()
+                if self._fhdlr:
+                    self._fhdlr.write(record)
+                    self._fhdlr.flush()
+                if self._stdhlr:
+                    self._stdhlr.write(record)
+                    self._stdhlr.flush()
+
+
+def logConf(*args, **kwargs):
+    # type(*args, **kwargs) -> None
+    filename = kwargs.get('filename', None)
+    timefmt = kwargs.get('timefmt', None)
+    actions = kwargs.get('actions', None)
+    stdout = kwargs.get('stdout', None)
+
+    if filename:
+        LogBase._fhdlr = open(filename, 'w')
+    if timefmt:
+        LogBase._timeFmt = timefmt
+    if actions:
+        LogBase._actions = actions
+    if stdout:
+        LogBase._stdhlr = sys.stdout
+    else:
+        LogBase._stdhlr = None
+
+
+OBR = Observer(callbacks=[logConf])
 
 
 class CNLogManager(object):
@@ -97,10 +139,10 @@ class CNLogManager(object):
 
 
 manager = CNLogManager()
-cnc = LogC
 
 
 def getCNLogger(loggname='default'):
+    # type(str) -> CNLogManger obj
     if loggname in manager.loggerMap:
         return manager.loggerMap.get(loggname)
     else:
@@ -108,18 +150,5 @@ def getCNLogger(loggname='default'):
 
 
 def basicCNLogging(**kwargs):
-    filename = kwargs.get('filename', None)
-    timefmt = kwargs.get('timefmt', None)
-    actions = kwargs.get('actions', None)
-    stdout = kwargs.get('stdout', None)
-
-    if filename is not None:
-        cnc.logfile = filename
-        if stdout is None:
-            cnc.stdout = False
-        else:
-            cnc.stdout = stdout
-    if timefmt is not None:
-        cnc.timeFmt = timefmt
-    if actions is not None:
-        cnc.actions = actions
+    # type(**kwargs) -> None
+    OBR.monitored = kwargs
